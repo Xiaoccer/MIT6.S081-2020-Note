@@ -45,5 +45,6 @@
 4. consolewrite函数：拿cons锁？，copy字符，然后调用uartputc，然后释放锁。
 5. uartputc函数在uart.c中，uart有一个循环缓冲区。uartputc会先获取uart_tx_lock锁。如果buffer满了，会调用sleep，sleep中有很多知识，后续会讲。否则，将字符放入buffer中，更新写指针，然后调用uartstart函数。最后释放uart_tx_lock锁。
 6. uartstart函数：top-and bottom- half都会调用。若设备正忙，会先不发送数据，直接返回，此时数据还会在buffer中等待发送。若设备不忙，则从读指针读取数据，然后根据读指针，wakeup读指针？最后将数据写入寄存器中。
-7. 但设备将数据写完后，会发生中断，在usertrap中，调用devintr函数判断是什么中断，如果是外部中断，调用plic_claim函数。
+7. 但设备将数据写完后，会发生中断。在usertrap中，调用devintr函数判断是什么中断，如果是外部中断，调用plic_claim函数返回具体是哪个外部中断，若发现是UART0_IRQ中断，则调用uartintr函数。
+8. 在uartintr函数中。
 
