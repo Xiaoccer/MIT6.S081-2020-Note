@@ -42,9 +42,17 @@
 1. 首先在第一个程序init.c中创建了一个文件为console，设备类型为T_DEVICE，用于代表终端，0，1，2三个描述符都指向该文件。然后执行sh.c。
 2. sh.c中的getcmd函数会调用fprintf函数向描述符2写入，为什么是2？fprintf又会调用vprintf，最终调用write函数。
 3. write函数调用sys_write，然后调用filewrite函数。在filewrite中，会判断文件描述符的类型，如果是FD_DEVICE类型，就会从devsw数组中调用consolewrite函数。
-4. consolewrite函数：拿cons锁？，copy字符，然后调用uartputc，然后释放锁。
-5. uartputc函数在uart.c中，uart有一个循环缓冲区。uartputc会先获取uart_tx_lock锁。如果buffer满了，会调用sleep，sleep中有很多知识，后续会讲。否则，将字符放入buffer中，更新写指针，然后调用uartstart函数。最后释放uart_tx_lock锁。
+4. consolewrite函数：拿cons锁，copy字符，调用uartputc，然后释放cons锁。cons是一个结构体，里面含有一个锁和一个buf。conf可以理解为uart的接收数据循环缓冲区（键盘是生产者，shell是消费者）。
+5. uartputc函数在uart.c中，uart有一个循环缓冲区，可以理解为发送缓冲区（shell是生产者，console是消费者）。uartputc会先获取uart_tx_lock锁。如果buffer满了，会调用sleep，sleep中有很多知识，后续会讲。否则，将字符放入buffer中，更新写指针，然后调用uartstart函数。最后释放uart_tx_lock锁。
 6. uartstart函数：top-and bottom- half都会调用。若设备正忙，会先不发送数据，直接返回，此时数据还会在buffer中等待发送。若设备不忙，则从读指针读取数据，然后根据读指针，wakeup读指针？最后将数据写入寄存器中。
-7. 但设备将数据写完后，会发生中断。在usertrap中，调用devintr函数判断是什么中断，如果是外部中断，调用plic_claim函数返回具体是哪个外部中断，若发现是UART0_IRQ中断，则调用uartintr函数。
-8. 在uartintr函数中。
+7. 当设备将数据写完后，会发生中断。在usertrap中，调用devintr函数判断是什么中断，如果是外部中断，调用plic_claim函数返回具体是哪个外部中断，若发现是UART0_IRQ中断，则调用uartintr函数。
+8. 在uartintr函数中，如果有字符可读，会先调用uartgetc函数获取字符，然后调用consoleintr函数（显然初始化显示美元符号的时候，是没有字符可读的）。接着获取uart_tx_lock锁，调用uartstart函数发送buffer中的字符，然后释放uart_tx_lock锁。注意，当console一次性写入多个字符时，只有第一个字符是通过uartputc函数中的uartstart发送，其余的在第一个字符发送完毕后的中断中调用uartintr的uartstart发送。
+9. consoleintr是对读取字符进行处理，下面会详细讲到。
+
+## 从键盘中读取字符
+
+1. sh.c中的gets会调用read函数，read调用sys_read调用fileread，进而调用consoleread。
+2. consoleread函数中，首先获取cons锁，若没有数据就sleep；否则从cons.buf中读取数据，拷贝到相应地方，最后释放cons锁。
+3. 如上，只要产生了uart的中断，都会在uartintr中调用uartgetc函数看是否有字符可读，然后就调用consoleintr函数。
+4. consoleintr函数会获取cons锁，然后将字符保存在cons.buf中。
 
