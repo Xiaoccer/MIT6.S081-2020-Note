@@ -44,7 +44,7 @@
 3. write函数调用sys_write，然后调用filewrite函数。在filewrite中，会判断文件描述符的类型，如果是FD_DEVICE类型，就会从devsw数组中调用consolewrite函数。
 4. consolewrite函数：拿cons锁，copy字符，调用uartputc，然后释放cons锁。cons是一个结构体，里面含有一个锁和一个buf。conf可以理解为uart的接收数据循环缓冲区（键盘是生产者，shell是消费者）。
 5. uartputc函数在uart.c中，uart有一个循环缓冲区，可以理解为发送缓冲区（shell是生产者，console是消费者）。uartputc会先获取uart_tx_lock锁。如果buffer满了，会调用sleep，sleep中有很多知识，后续会讲。否则，将字符放入buffer中，更新写指针，然后调用uartstart函数。最后释放uart_tx_lock锁。
-6. uartstart函数：top-and bottom- half都会调用。若设备正忙，会先不发送数据，直接返回，此时数据还会在buffer中等待发送。若设备不忙，则从读指针读取数据，然后根据读指针，wakeup读指针？最后将数据写入寄存器中。
+6. uartstart函数：top- and bottom- half都会调用。若设备正忙，会先不发送数据，直接返回，此时数据还会在buffer中等待发送。若设备不忙，则从读指针读取数据，然后根据读指针，wakeup读指针？最后将数据写入寄存器中。
 7. 当设备将数据写完后，会发生中断。在usertrap中，调用devintr函数判断是什么中断，如果是外部中断，调用plic_claim函数返回具体是哪个外部中断，若发现是UART0_IRQ中断，则调用uartintr函数。
 8. 在uartintr函数中，如果有字符可读，会先调用uartgetc函数获取字符，然后调用consoleintr函数（显然初始化显示美元符号的时候，是没有字符可读的）。接着获取uart_tx_lock锁，调用uartstart函数发送buffer中的字符，然后释放uart_tx_lock锁。注意，当console一次性写入多个字符时，只有第一个字符是通过uartputc函数中的uartstart发送，其余的在第一个字符发送完毕后的中断中调用uartintr的uartstart发送。
 9. consoleintr是对读取字符进行处理，下面会详细讲到。
@@ -53,6 +53,15 @@
 
 1. sh.c中的gets会调用read函数，read调用sys_read调用fileread，进而调用consoleread。
 2. consoleread函数中，首先获取cons锁，若没有数据就sleep；否则从cons.buf中读取数据，拷贝到相应地方，最后释放cons锁。
-3. 如上，只要产生了uart的中断，都会在uartintr中调用uartgetc函数看是否有字符可读，然后就调用consoleintr函数。
-4. consoleintr函数会获取cons锁，然后将字符保存在cons.buf中。
+3. 如上所说，只要产生了uart的中断，都会在uartintr中调用uartgetc函数看是否有字符可读，然后就调用consoleintr函数。
+4. consoleintr函数会获取cons锁，然后对从键盘读入的字符进行处理，对于特殊的字符如ctrl-p之类的，就执行相应操作；其余的会先调用consputc将字符回显到console上，然后更新cons.buf供shell读取。
+5. consputc采用的是同步put，会关闭中断，然后向uart寄存器写入字符。
+6. cons的buf有三个指针，r,w和e，为什么有e，盲猜和退格换行等有关，有空可钻研一下。
+7. 如果用户没有输入完整的一行，任何读键盘的进程会一直sleep。因为consoleintr中只有整行数据到了，才会wakeup sleep中的进程。
+
+## 计时器中断
+
+1. start.c函数中会有timerinit的调用，该函数对CLINT进行了编程，还将机器模式下的trap handler置为timervec函数（设置mtvec为timervec）。
+2. timervec会对CLINT重新编程，然后发起一个软中断，在最后mret的时候从机器模式返回管理者模式。该软中断可以被内核屏蔽的，
+3. 疑问：为什么每个cpu会32个暂存区（scratch），不过只用了其中的6个。
 
