@@ -100,7 +100,22 @@
 3. kill（被动退出）：
    1. 被kill的过程中，可能正在执行一些原子操作，如更新文件数据结构等。为保证操作的原子性，不会立马结束进程，而是设置p->killed=1。
    2. 第一种情况进程正在运行：当该进程被定时器中断或者通过系统调入进入内核，usertrap看到p->killed=1，会调用exit函数来结束进程。
-   3. 第二种情况进程正在sleep:如果被kill的进程处于sleeping状态，kill还会将进程置为runnable状态。当进程再次运行时，会恢复置sleep之后的语句，在sleep条件的循环判断中，可以判断p->killed的状态，然后做进一步的处理。若是在系统调用中，直接返回调用，这样能返回置usertrap，可结束进程。但像一些原子性操作，如等待磁盘更新的sleep，可能就不判断p->killed，等其操作完成再返回置usertrap。
+   3. 第二种情况进程正在sleep:如果被kill的进程处于sleeping状态，kill还会将进程置为runnable状态。当进程再次运行时，会恢复置sleep之后的语句，在sleep条件的循环判断中，可以判断p->killed的状态，然后做进一步的处理。若是在系统调用中，直接返回调用，这样能返回置usertrap，可结束进程。但像一些原子性操作，如等待磁盘更新的sleep，可能就不判断p->killed，等其操作完成再返回至usertrap。
 
+# File system
 
+## disk layer
 
+1. 磁盘：一般能写的最小单位是扇区(sector)，一般为512字节。block大小由文件系统来决定，一般为多个扇区组成。
+2. disk inode（dinode）
+   1. 可以看作是文件的索引，里面有type字段指示是文件还是目录，还有nlink字段指示有多少目录指向该inode。
+   2. dinode里面有data block的地址，block地址分为直接地址和间接地址。间接地址可以增大文件数据的大小。
+   3. 若该inode是目录类型，它在block的data就是一些目录项。目录项一般就包含文件名和对应的inode号（所以说inode相当于文件的索引）。
+   4. 若新建一个文件，首先找到空闲的inode块，然后更新根目录的inode信息（如size信息），然后更新根目录的block信息（如添加新增文件的目录项），接着更新bitmap，找到空闲的block，最后往block写入数据，并更新该文件的inode信息（如数据的block编号等）。
+
+## Buffer cache
+
+1. buffer cache的作用是缓存从磁盘读上去来的block数据，xv6的设计有以下特点：
+   1. 通过双向链表实现lru的淘汰算法。
+   2. 有两种锁，一种是cache的大锁，遍历的时候用；一种是针对每个block的锁。在获取block级别的锁之前，会先释放cache大锁。
+   3. 每个block的锁获取是通过自旋锁+sleep来实现的，叫sleeplock，实现有点巧妙，建议看代码理解。简单来说，就是sleeplock内部有个自旋锁和locked标志位。要持有锁时，先获取内部自旋锁，要是获取自旋锁成功且locked为0，则成功持有锁，将locked置为1。若获取自旋锁成功但locked为1，则调用sleep睡眠，sleep会释放自旋锁的。这样的好处是，磁盘的操作一般比较耗时，无法获取锁的时候可以用sleep让出cpu，避免浪费。
