@@ -142,6 +142,7 @@
       3. 然后调用write_head，读取磁盘上Log Header的内容，将其更新为内存中操作过的LogHeader，再重新写入磁盘。此时写入成功就是commit了。
       4. 接着调用install_trans安装函数，读取n3和block45于内存，在内存中将n3内存拷贝至block45，然后调用bwrite写block45落盘。
       5. 更改内存中的Log Header，将待安装数量改为0，再次调用write_head。
+   4. ![image-20220228220401945](pic/image-20220228220401945.png)
 4. 挑战：
    1. bcache不能对在日志操作的数据块进行驱逐并回写至硬盘，如block45，因为违反了write ahead原则，通过bpin增加refs。
    2. 文件系统调用的操作要全部在log block完成，所以不能操作log size。对于大文件的写入，会分成多个事务，依次提交，所以大文件的写入可能不是原子的，但是至少文件系统可以不被损坏。
