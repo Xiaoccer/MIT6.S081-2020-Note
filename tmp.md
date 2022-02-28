@@ -106,12 +106,14 @@
 
 ## disk layer
 
-1. 磁盘：一般能写的最小单位是扇区(sector)，一般为512字节。block大小由文件系统来决定，一般为多个扇区组成。
+1. 磁盘：一般能写的最小单位是扇区(sector)，一般为512字节。block大小由文件系统来决定，一般为多个扇区组成。硬件保证整个扇区的读写是原子性的。
 2. disk inode（dinode）
    1. 可以看作是文件的索引，里面有type字段指示是文件还是目录，还有nlink字段指示有多少目录指向该inode。
    2. dinode里面有data block的地址，block地址分为直接地址和间接地址。间接地址可以增大文件数据的大小。
    3. 若该inode是目录类型，它在block的data就是一些目录项。目录项一般就包含文件名和对应的inode号（所以说inode相当于文件的索引）。
-   4. 若新建一个文件，首先找到空闲的inode块，然后更新根目录的inode信息（如size信息），然后更新根目录的block信息（如添加新增文件的目录项），接着更新bitmap，找到空闲的block，最后往block写入数据，并更新该文件的inode信息（如数据的block编号等）。
+   4. 若新建一个文件并写入数据，首先找到空闲的inode块，更新该inode的信息（如类型），然后更新根目录的block信息（如添加新增文件的目录项），然后更新根目录的inode信息（如size信息），接着更新bitmap，找到空闲的block，最后往block写入数据，并更新该文件的inode信息（如数据的block编号等）。
+   5. ![image-20220226180727174](pic/image-20220226180727174.png)
+   6. ![image-20220226180806685](pic/image-20220226180806685.png)
 
 ## Buffer cache
 
@@ -119,3 +121,29 @@
    1. 通过双向链表实现lru的淘汰算法。
    2. 有两种锁，一种是cache的大锁，遍历的时候用；一种是针对每个block的锁。在获取block级别的锁之前，会先释放cache大锁。
    3. 每个block的锁获取是通过自旋锁+sleep来实现的，叫sleeplock，实现有点巧妙，建议看代码理解。简单来说，就是sleeplock内部有个自旋锁和locked标志位。要持有锁时，先获取内部自旋锁，要是获取自旋锁成功且locked为0，则成功持有锁，将locked置为1。若获取自旋锁成功但locked为1，则调用sleep睡眠，sleep会释放自旋锁的。这样的好处是，磁盘的操作一般比较耗时，无法获取锁的时候可以用sleep让出cpu，避免浪费。
+
+## Logging Layer
+
+1. 优点：
+   1. 保证了文件系统调用的原子性。
+   2. 能做到重启后快速恢复。
+   3. 有高性能。
+2. 基本流程：
+   1. 在内存中操作完要写入的数据后，先写在log block区。
+   2. 提交commit（写专门的block）。
+   3. 安装log block，将log block数据拷贝到真实要写入的block。该过程是幂等的，因为重启后有可能会重复该过程。
+   4. 清理log 和commit。
+3. 实现细节：
+   1. ![image-20220228212458107](pic/image-20220228212458107.png)
+   2. 如上图，有个Log Header的block，会记录待安装块数量n，和待安装log block的编号。该Log Header在内存中有一份对应的数据结构。
+   3. Commit流程如下：
+      1. 假设要修改block45的数据，会在内存bcache上先缓冲一份block45，然后操作缓冲区的block45。
+      2. 当修改完毕后，要写入落盘时，会在内存的Log Header的数据结构上记录第N个Log Block对应block45，假设是n3。此时调用write_log，读取n3内容至内存，在内存中将block45拷贝（memmove）到n3，然后调用bwrite写n3落盘。
+      3. 然后调用write_head，读取磁盘上Log Header的内容，将其更新为内存中操作过的LogHeader，再重新写入磁盘。此时写入成功就是commit了。
+      4. 接着调用install_trans安装函数，读取n3和block45于内存，在内存中将n3内存拷贝至block45，然后调用bwrite写block45落盘。
+      5. 更改内存中的Log Header，将待安装数量改为0，再次调用write_head。
+4. 挑战：
+   1. bcache不能对在日志操作的数据块进行驱逐并回写至硬盘，如block45，因为违反了write ahead原则，通过bpin增加refs。
+   2. 文件系统调用的操作要全部在log block完成，所以不能操作log size。对于大文件的写入，会分成多个事务，依次提交，所以大文件的写入可能不是原子的，但是至少文件系统可以不被损坏。
+   3. 多个并发文件系统调用，需要保证在log block内能完成，所以限制并发数和每个调用所需的Block是否在log block还有空间。多个文件系统调用合并一起提交Group Commit。在begin_op函数中有各种情况的判断。
+   4. 如果bcache空间不足，应该直接崩溃系统，而不是返回失败。因为假设一个文件操作了多步，其中一步没有了bcache空间，此时为了保证操作原子，不能很好回退之前几步的操作，直接崩溃好一点。
