@@ -35,9 +35,10 @@ Year: 1998
 3. 日志结构
     1. Super block：会记录首个需恢复事务的offset和事务序列号，崩溃后恢复时，从该事务可以一直遍历进行恢复。
     2. Descriptor：记录该事务要修改的block编号（回写到原来磁盘的block编号），序列号，有个magic number区分数据block。
-    3. Commit block：记录了该事务的序列号。有一个magic number区分数据block
-    4. 日志是环形buffer。
-    5. ![image-20220306161403510](pic/image-20220306161403510.png)
+    3. 数据块。
+    4. Commit block：记录了该事务的序列号。有一个magic number区分数据block
+    5. 日志是环形buffer。
+    6. ![image-20220306161403510](pic/image-20220306161403510.png)
 4. 获得高性能的原因（与xv6相比）：
     1. ASYNC
         1. 系统调用的异步的。
